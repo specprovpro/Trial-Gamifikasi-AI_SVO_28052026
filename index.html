@@ -83,6 +83,12 @@
             background: var(--neon-cyan);
             color: var(--bg-dark);
         }
+        .btn-retro:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+            box-shadow: none;
+            transform: none;
+        }
 
         .input-group { margin-bottom: 20px; }
         .input-group label { display: block; margin-bottom: 5px; font-weight: 600; color: var(--neon-lime); }
@@ -337,7 +343,7 @@
                 <!-- Results inject via JS -->
             </div>
 
-            <button class="btn-retro" onclick="location.reload()">Ulangi Simulasi</button>
+            <button class="btn-retro" id="btnRestart" onclick="location.reload()">Ulangi Simulasi</button>
         </div>
     </div>
 
@@ -371,6 +377,9 @@
         let isAudioMuted = true;
         let audioCtx;
         let bgmInterval;
+        
+        // --- VARIABLE DURASI API ---
+        let gameStartTime; 
 
         // --- AUDIO SYSTEM (Web Audio API) ---
         function initAudio() {
@@ -439,7 +448,7 @@
             const name = document.getElementById('playerName').value.trim();
             const nik = document.getElementById('playerNIK').value.trim();
             if (!name || !nik) {
-                alert("Mohon lengkapi Nama dan NIK Anda!");
+                alert("Mohon lengkapi Nama dan NIK Anda!"); // Mempertahankan alert original Anda
                 return;
             }
             document.getElementById('dispName').innerText = name;
@@ -452,6 +461,10 @@
             currentQIndex = 0;
             score = 0;
             userHistory = [];
+            
+            // --> API INTEGRATION: Mencatat waktu ketika permainan persis dimulai
+            gameStartTime = new Date(); 
+            
             updateUI();
             switchScreen('screen-game');
             renderCard();
@@ -488,7 +501,7 @@
             card.addEventListener('dragstart', handleDragStart);
             card.addEventListener('dragend', handleDragEnd);
 
-            // Touch Events for Mobile (Crucial for "Scrollable di HP")
+            // Touch Events for Mobile
             let startX, startY, initialX, initialY;
             card.addEventListener('touchstart', (e) => {
                 const touch = e.touches[0];
@@ -501,7 +514,7 @@
             }, {passive: false});
 
             card.addEventListener('touchmove', (e) => {
-                e.preventDefault(); // Prevent scrolling while dragging
+                e.preventDefault(); 
                 const touch = e.touches[0];
                 const dx = touch.clientX - startX;
                 const dy = touch.clientY - startY;
@@ -512,7 +525,6 @@
                 card.style.transition = 'transform 0.3s, opacity 0.3s';
                 card.style.zIndex = '1';
                 
-                // Hide card temporarily to find the element underneath
                 card.style.visibility = 'hidden';
                 const touch = e.changedTouches[0];
                 const elemUnder = document.elementFromPoint(touch.clientX, touch.clientY);
@@ -523,7 +535,6 @@
                 if (dropZone) {
                     processDrop(dropZone.id === 'zoneDeposit' ? 'deposit' : 'withdrawal', card);
                 } else {
-                    // Snap back
                     card.style.transform = 'translate(0px, 0px) rotate(0deg)';
                 }
             });
@@ -601,7 +612,6 @@
 
             showToast(fbText, fbClass);
             
-            // Animate card out
             cardElement.style.transform = targetZone === 'deposit' ? 'translate(-200px, -200px) scale(0)' : 'translate(200px, -200px) scale(0)';
             cardElement.style.opacity = '0';
             
@@ -619,9 +629,9 @@
             setTimeout(() => { toast.style.display = 'none'; }, 1200);
         }
 
-        // --- DEBRIEFING ---
+        // --- DEBRIEFING & API SUBMISSION ---
         function endGame() {
-            updateUI(); // Fill progress bar fully
+            updateUI(); 
             setTimeout(() => {
                 switchScreen('screen-result');
                 renderResults();
@@ -661,6 +671,88 @@
                 `;
                 listEl.appendChild(li);
             });
+
+            // --> API INTEGRATION: Panggil fungsi pengiriman otomatis ketika hasil dirender
+            sendGameDataToGoogleSheets();
+        }
+
+        // --- FUNGSI ASYNC PENGIRIMAN DATA KE GOOGLE SHEETS ---
+        async function sendGameDataToGoogleSheets() {
+            const url = "https://script.google.com/macros/s/AKfycbw2tO-D0ZdEVEbIDDQNmXOFcgdGm4rdzD8iMkuThKiUbM81bnz6Pn-xiBsRQwvT17rbsg/exec";
+
+            // 1. Kalkulasi Durasi
+            const gameEndTime = new Date();
+            const durationSeconds = Math.round((gameEndTime - gameStartTime) / 1000);
+
+            // 2. Kalkulasi Akurasi
+            const totalBenar = userHistory.filter(item => item.isCorrect).length;
+            const totalSalah = userHistory.filter(item => !item.isCorrect).length;
+
+            // 3. Status Kelulusan (Mengadopsi logika UI)
+            let statusKelulusan = "Waspada";
+            if (score >= 750) statusKelulusan = "Luar Biasa";
+            else if (score >= 400) statusKelulusan = "Kerja Bagus";
+
+            // 4. Kalkulasi Badge
+            let earnedBadges = [];
+            if (document.getElementById('badge-1').classList.contains('earned')) earnedBadges.push("Novice Sorter");
+            if (document.getElementById('badge-2').classList.contains('earned')) earnedBadges.push("Pro Sorter");
+            if (document.getElementById('badge-3').classList.contains('earned')) earnedBadges.push("EBA Master");
+            const badgesString = earnedBadges.length > 0 ? earnedBadges.join(", ") : "Tidak ada";
+
+            // 5. Menyusun Payload JSON (Sesuai header GAS)
+            const playerData = {
+                Timestamp: new Date().toISOString(),
+                NIK: document.getElementById('playerNIK').value.trim(),
+                Nama_Pemain: document.getElementById('playerName').value.trim(),
+                Durasi_Permainan_Detik: durationSeconds,
+                Skor_Akhir_EBA: score,
+                Status_Kelulusan: statusKelulusan,
+                Total_Jawaban_Benar: totalBenar,
+                Total_Jawaban_Salah: totalSalah,
+                Pencapaian_Badge: badgesString,
+                Log_Interaksi_Detail: JSON.stringify(userHistory)
+            };
+
+            // 6. Pengiriman ke Web App
+            try {
+                // Memberikan feedback UI bahwa data sedang dikirim, menonaktifkan tombol ulangi
+                const restartBtn = document.getElementById('btnRestart');
+                const originalText = restartBtn.innerText;
+                restartBtn.innerText = "MENGIRIM DATA...";
+                restartBtn.disabled = true;
+
+                const response = await fetch(url, {
+                    method: 'POST',
+                    mode: 'cors',
+                    headers: {
+                        'Content-Type': 'text/plain;charset=utf-8' 
+                    },
+                    body: JSON.stringify(playerData)
+                });
+
+                const result = await response.json();
+                
+                // Mengembalikan tombol seperti semula setelah pengiriman selesai
+                restartBtn.innerText = originalText;
+                restartBtn.disabled = false;
+
+                if (result.status === "success") {
+                    showToast("Data tersimpan ke Database!", "toast-success");
+                } else {
+                    showToast("Gagal menyimpan data.", "toast-error");
+                    console.error("GAS Error:", result.message);
+                }
+
+            } catch (error) {
+                console.error("Fetch Error:", error);
+                showToast("Koneksi gagal. Periksa jaringan Anda.", "toast-error");
+                
+                // Kembalikan status tombol apabila terjadi error koneksi
+                const restartBtn = document.getElementById('btnRestart');
+                restartBtn.innerText = "Ulangi Simulasi";
+                restartBtn.disabled = false;
+            }
         }
     </script>
 </body>
